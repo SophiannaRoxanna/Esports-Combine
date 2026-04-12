@@ -1,4 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  submitSoloScore, loadSoloLeaderboard,
+  createLobby, joinLobby, submitLobbyScore, loadLobbyLeaderboard,
+  getLobbyPlayerCount, updateLobbyStatus,
+  subscribeLobbyScores, subscribeLobbyStatus, unsubscribe,
+} from "./supabase";
 
 const COLORS = {
   bg: "#0A0E17", bgLight: "#111827", panel: "#1A1F2E", panelLight: "#232B3E",
@@ -7,22 +13,10 @@ const COLORS = {
   yellow: "#F59E0B", purple: "#8B5CF6", orange: "#F97316",
 };
 
-// ==================== STORAGE HELPERS ====================
-async function saveScore(name, scores) {
-  try {
-    const entry = { name, scores, total: scores.reaction + scores.aim + scores.pattern, ts: Date.now() };
-    const existing = await loadLeaderboard();
-    existing.push(entry);
-    existing.sort((a, b) => b.total - a.total);
-    localStorage.setItem("combine-leaderboard", JSON.stringify(existing.slice(0, 50)));
-    return entry;
-  } catch (e) { console.error(e); return null; }
-}
-async function loadLeaderboard() {
-  try {
-    const r = localStorage.getItem("combine-leaderboard");
-    return r ? JSON.parse(r) : [];
-  } catch { return []; }
+function formatDate(ts) {
+  const d = new Date(ts);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + ", " +
+    d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
 // ==================== MAIN APP ====================
@@ -33,41 +27,101 @@ export default function GardenCityEsportsCombine() {
   const [leaderboard, setLeaderboard] = useState([]);
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => { loadLeaderboard().then(setLeaderboard); }, []);
+  // Mode & lobby state
+  const [mode, setMode] = useState("solo"); // 'solo' | 'lobby'
+  const [lobbyId, setLobbyId] = useState(null);
+  const [lobbyCode, setLobbyCode] = useState("");
+  const [lobbyData, setLobbyData] = useState(null);
+
+  useEffect(() => { loadSoloLeaderboard().then(setLeaderboard).catch(() => {}); }, []);
 
   const updateScore = (test, score) => setScores(prev => ({ ...prev, [test]: score }));
+
+  const resetGame = () => {
+    setScores({ reaction: 0, aim: 0, pattern: 0 });
+    setPlayerName("");
+  };
 
   const submitScore = async () => {
     if (!playerName.trim() || submitting) return;
     setSubmitting(true);
-    await saveScore(playerName.trim(), scores);
-    const lb = await loadLeaderboard();
-    setLeaderboard(lb);
+    try {
+      if (mode === "lobby" && lobbyId) {
+        await submitLobbyScore(lobbyId, playerName.trim(), scores);
+        const lb = await loadLobbyLeaderboard(lobbyId);
+        setLeaderboard(lb);
+      } else {
+        await submitSoloScore(playerName.trim(), scores);
+        const lb = await loadSoloLeaderboard();
+        setLeaderboard(lb);
+      }
+    } catch (e) { console.error(e); }
     setSubmitting(false);
     setScreen("leaderboard");
   };
 
+  const startSolo = () => { setMode("solo"); setLobbyId(null); setLobbyCode(""); setLobbyData(null); setScreen("name"); };
+  const startMultiplayer = () => { setScreen("lobby-menu"); };
+
+  const goHome = () => {
+    resetGame();
+    setMode("solo");
+    setLobbyId(null);
+    setLobbyCode("");
+    setLobbyData(null);
+    setScreen("landing");
+    loadSoloLeaderboard().then(setLeaderboard).catch(() => {});
+  };
+
+  const playAgain = () => {
+    setScores({ reaction: 0, aim: 0, pattern: 0 });
+    if (mode === "lobby") {
+      setScreen("name");
+    } else {
+      setScreen("test1-intro");
+    }
+  };
+
   return (
     <div style={{ background: COLORS.bg, minHeight: "100vh", color: COLORS.white, fontFamily: "'Segoe UI', system-ui, sans-serif", maxWidth: 480, margin: "0 auto", position: "relative", overflow: "hidden" }}>
-      {/* Accent bar */}
       <div style={{ height: 3, background: `linear-gradient(90deg, ${COLORS.cyan}, ${COLORS.purple})`, position: "sticky", top: 0, zIndex: 99 }} />
 
-      {screen === "landing" && <Landing onStart={() => setScreen("name")} leaderboard={leaderboard} onShowLB={() => setScreen("leaderboard")} />}
+      {screen === "landing" && <Landing onSolo={startSolo} onMultiplayer={startMultiplayer} leaderboard={leaderboard} onShowLB={() => { setMode("solo"); setScreen("leaderboard"); }} />}
       {screen === "name" && <NameEntry name={playerName} setName={setPlayerName} onNext={() => playerName.trim() && setScreen("test1-intro")} />}
+
+      {/* Lobby screens */}
+      {screen === "lobby-menu" && <LobbyMenu onBack={goHome} onCreateScreen={() => setScreen("lobby-create")} onJoinScreen={() => setScreen("lobby-join")} />}
+      {screen === "lobby-create" && <LobbyCreateScreen onBack={() => setScreen("lobby-menu")} onCreate={(data) => {
+        setMode("lobby"); setLobbyId(data.id); setLobbyCode(data.code); setLobbyData(data); setScreen("lobby-waiting");
+      }} />}
+      {screen === "lobby-join" && <LobbyJoinScreen onBack={() => setScreen("lobby-menu")} onJoin={(data) => {
+        setMode("lobby"); setLobbyId(data.id); setLobbyCode(data.code); setLobbyData(data); setScreen("name");
+      }} />}
+      {screen === "lobby-waiting" && <LobbyWaiting lobby={lobbyData} onStart={() => {
+        updateLobbyStatus(lobbyId, "active").catch(() => {});
+        setScreen("name");
+      }} onBack={goHome} />}
+
+      {/* Tests */}
       {screen === "test1-intro" && <TestIntro num={1} title="REACTION TIME" desc="Wait for the screen to turn green, then tap as fast as you can. Don't tap early!" icon="⚡" color={COLORS.cyan} onStart={() => setScreen("test1")} />}
       {screen === "test1" && <ReactionTest onComplete={ms => { updateScore("reaction", ms); setScreen("test2-intro"); }} />}
       {screen === "test2-intro" && <TestIntro num={2} title="AIM TRAINER" desc="Tap each target as fast as you can. 15 targets. Speed and accuracy." icon="🎯" color={COLORS.red} onStart={() => setScreen("test2")} />}
       {screen === "test2" && <AimTest onComplete={s => { updateScore("aim", s); setTimeout(() => setScreen("test3-intro"), 1500); }} />}
       {screen === "test3-intro" && <TestIntro num={3} title="PATTERN MEMORY" desc="Watch the sequence, then repeat it. Gets harder each round. How far can you go?" icon="🧠" color={COLORS.purple} onStart={() => setScreen("test3")} />}
       {screen === "test3" && <PatternTest onComplete={s => { updateScore("pattern", s); setTimeout(() => setScreen("results"), 1500); }} />}
+
       {screen === "results" && <Results name={playerName} scores={scores} onSubmit={submitScore} submitting={submitting} />}
-      {screen === "leaderboard" && <Leaderboard data={leaderboard} playerName={playerName} onBack={() => setScreen("landing")} onPlayAgain={() => { setScores({ reaction: 0, aim: 0, pattern: 0 }); setScreen("test1-intro"); }} />}
+      {screen === "leaderboard" && (
+        mode === "lobby" && lobbyId
+          ? <LobbyLeaderboard lobbyId={lobbyId} lobbyCode={lobbyCode} playerName={playerName} onBack={goHome} onPlayAgain={playAgain} />
+          : <Leaderboard data={leaderboard} playerName={playerName} onBack={goHome} onPlayAgain={playAgain} />
+      )}
     </div>
   );
 }
 
 // ==================== LANDING SCREEN ====================
-function Landing({ onStart, leaderboard, onShowLB }) {
+function Landing({ onSolo, onMultiplayer, leaderboard, onShowLB }) {
   return (
     <div style={{ padding: "40px 24px", textAlign: "center", minHeight: "100vh", display: "flex", flexDirection: "column", justifyContent: "center" }}>
       <div style={{ fontSize: 11, color: COLORS.cyan, letterSpacing: 4, fontWeight: 700, marginBottom: 8 }}>GARDEN CITY ESPORTS</div>
@@ -83,8 +137,12 @@ function Landing({ onStart, leaderboard, onShowLB }) {
         ))}
       </div>
 
-      <button onClick={onStart} style={{ background: `linear-gradient(135deg, ${COLORS.cyan}, ${COLORS.cyanDark})`, color: COLORS.bg, border: "none", borderRadius: 12, padding: "16px 32px", fontSize: 18, fontWeight: 800, cursor: "pointer", width: "100%", marginBottom: 12, letterSpacing: 1 }}>
-        START COMBINE
+      <button onClick={onSolo} style={{ background: `linear-gradient(135deg, ${COLORS.cyan}, ${COLORS.cyanDark})`, color: COLORS.bg, border: "none", borderRadius: 12, padding: "16px 32px", fontSize: 18, fontWeight: 800, cursor: "pointer", width: "100%", marginBottom: 12, letterSpacing: 1 }}>
+        SOLO PLAY
+      </button>
+
+      <button onClick={onMultiplayer} style={{ background: `linear-gradient(135deg, ${COLORS.purple}, #6D28D9)`, color: COLORS.white, border: "none", borderRadius: 12, padding: "16px 32px", fontSize: 18, fontWeight: 800, cursor: "pointer", width: "100%", marginBottom: 12, letterSpacing: 1 }}>
+        MULTIPLAYER
       </button>
 
       {leaderboard.length > 0 && (
@@ -114,6 +172,278 @@ function NameEntry({ name, setName, onNext }) {
       <button onClick={onNext} disabled={!name.trim()} style={{ marginTop: 16, background: name.trim() ? COLORS.cyan : COLORS.grayDark, color: COLORS.bg, border: "none", borderRadius: 12, padding: "14px 32px", fontSize: 16, fontWeight: 700, cursor: name.trim() ? "pointer" : "default", width: "100%", opacity: name.trim() ? 1 : 0.5 }}>
         LET'S GO →
       </button>
+    </div>
+  );
+}
+
+// ==================== LOBBY MENU ====================
+function LobbyMenu({ onBack, onCreateScreen, onJoinScreen }) {
+  return (
+    <div style={{ padding: "60px 24px", textAlign: "center", minHeight: "100vh", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+      <div style={{ fontSize: 56, marginBottom: 16 }}>🏟️</div>
+      <h2 style={{ fontSize: 28, fontWeight: 900, marginBottom: 8 }}>MULTIPLAYER</h2>
+      <p style={{ color: COLORS.gray, fontSize: 14, marginBottom: 32 }}>Create a lobby or join one with a code</p>
+
+      <button onClick={onCreateScreen} style={{ background: `linear-gradient(135deg, ${COLORS.purple}, #6D28D9)`, color: COLORS.white, border: "none", borderRadius: 12, padding: "16px 32px", fontSize: 18, fontWeight: 800, cursor: "pointer", width: "100%", marginBottom: 12 }}>
+        CREATE LOBBY
+      </button>
+      <button onClick={onJoinScreen} style={{ background: COLORS.panel, color: COLORS.cyan, border: `1px solid ${COLORS.cyan}44`, borderRadius: 12, padding: "16px 32px", fontSize: 18, fontWeight: 700, cursor: "pointer", width: "100%", marginBottom: 12 }}>
+        JOIN WITH CODE
+      </button>
+      <button onClick={onBack} style={{ background: "transparent", color: COLORS.grayLight, border: "none", padding: "12px", fontSize: 14, cursor: "pointer" }}>
+        ← Back
+      </button>
+    </div>
+  );
+}
+
+// ==================== LOBBY CREATE ====================
+function LobbyCreateScreen({ onBack, onCreate }) {
+  const [hostName, setHostName] = useState("");
+  const [maxPlayers, setMaxPlayers] = useState(10);
+  const [joinMinutes, setJoinMinutes] = useState(5);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleCreate = async () => {
+    if (!hostName.trim() || creating) return;
+    setCreating(true);
+    setError("");
+    try {
+      const data = await createLobby(hostName.trim(), maxPlayers, joinMinutes);
+      onCreate(data);
+    } catch (e) {
+      setError("Failed to create lobby. Try again.");
+      setCreating(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: "40px 24px", textAlign: "center", minHeight: "100vh", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+      <div style={{ fontSize: 48, marginBottom: 16 }}>🎯</div>
+      <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 24 }}>CREATE LOBBY</h2>
+
+      <div style={{ textAlign: "left", marginBottom: 16 }}>
+        <label style={{ fontSize: 12, color: COLORS.gray, letterSpacing: 1 }}>YOUR NAME</label>
+        <input value={hostName} onChange={e => setHostName(e.target.value)} placeholder="Host name..." maxLength={20}
+          style={{ display: "block", width: "100%", boxSizing: "border-box", background: COLORS.panel, border: `2px solid ${COLORS.cyan}44`, borderRadius: 10, padding: "14px 16px", fontSize: 16, color: COLORS.white, outline: "none", marginTop: 6, fontWeight: 600 }} />
+      </div>
+
+      <div style={{ textAlign: "left", marginBottom: 16 }}>
+        <label style={{ fontSize: 12, color: COLORS.gray, letterSpacing: 1 }}>EXPECTED PLAYERS: <span style={{ color: COLORS.cyan, fontWeight: 700 }}>{maxPlayers}</span></label>
+        <input type="range" min={2} max={100} value={maxPlayers} onChange={e => setMaxPlayers(Number(e.target.value))}
+          style={{ display: "block", width: "100%", marginTop: 8, accentColor: COLORS.cyan }} />
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: COLORS.grayDark, marginTop: 2 }}>
+          <span>2</span><span>100</span>
+        </div>
+      </div>
+
+      <div style={{ textAlign: "left", marginBottom: 24 }}>
+        <label style={{ fontSize: 12, color: COLORS.gray, letterSpacing: 1 }}>JOIN TIMER: <span style={{ color: COLORS.cyan, fontWeight: 700 }}>{joinMinutes} min</span></label>
+        <input type="range" min={1} max={30} value={joinMinutes} onChange={e => setJoinMinutes(Number(e.target.value))}
+          style={{ display: "block", width: "100%", marginTop: 8, accentColor: COLORS.cyan }} />
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: COLORS.grayDark, marginTop: 2 }}>
+          <span>1 min</span><span>30 min</span>
+        </div>
+      </div>
+
+      {error && <div style={{ color: COLORS.red, fontSize: 13, marginBottom: 12 }}>{error}</div>}
+
+      <button onClick={handleCreate} disabled={!hostName.trim() || creating}
+        style={{ background: hostName.trim() ? `linear-gradient(135deg, ${COLORS.purple}, #6D28D9)` : COLORS.grayDark, color: COLORS.white, border: "none", borderRadius: 12, padding: "16px 32px", fontSize: 18, fontWeight: 800, cursor: "pointer", width: "100%", marginBottom: 12, opacity: creating ? 0.6 : 1 }}>
+        {creating ? "CREATING..." : "CREATE LOBBY"}
+      </button>
+      <button onClick={onBack} style={{ background: "transparent", color: COLORS.grayLight, border: "none", padding: "12px", fontSize: 14, cursor: "pointer" }}>
+        ← Back
+      </button>
+    </div>
+  );
+}
+
+// ==================== LOBBY JOIN ====================
+function LobbyJoinScreen({ onBack, onJoin }) {
+  const [code, setCode] = useState("");
+  const [joining, setJoining] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleJoin = async () => {
+    if (code.length < 6 || joining) return;
+    setJoining(true);
+    setError("");
+    try {
+      const data = await joinLobby(code);
+      if (!data) {
+        setError("Lobby not found or already completed.");
+        setJoining(false);
+        return;
+      }
+      onJoin(data);
+    } catch {
+      setError("Failed to join. Check the code and try again.");
+      setJoining(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: "60px 24px", textAlign: "center", minHeight: "100vh", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+      <div style={{ fontSize: 48, marginBottom: 16 }}>🔗</div>
+      <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 8 }}>JOIN LOBBY</h2>
+      <p style={{ color: COLORS.gray, fontSize: 13, marginBottom: 24 }}>Enter the 6-character code</p>
+
+      <input value={code} onChange={e => setCode(e.target.value.toUpperCase().slice(0, 6))} placeholder="ABC123"
+        maxLength={6} autoFocus
+        style={{ background: COLORS.panel, border: `2px solid ${COLORS.purple}66`, borderRadius: 12, padding: "16px 20px", fontSize: 28, color: COLORS.white, textAlign: "center", width: "100%", boxSizing: "border-box", outline: "none", fontWeight: 800, letterSpacing: 8, fontFamily: "monospace" }}
+        onKeyDown={e => e.key === "Enter" && handleJoin()} />
+
+      {error && <div style={{ color: COLORS.red, fontSize: 13, marginTop: 12 }}>{error}</div>}
+
+      <button onClick={handleJoin} disabled={code.length < 6 || joining}
+        style={{ marginTop: 16, background: code.length >= 6 ? `linear-gradient(135deg, ${COLORS.purple}, #6D28D9)` : COLORS.grayDark, color: COLORS.white, border: "none", borderRadius: 12, padding: "14px 32px", fontSize: 16, fontWeight: 700, cursor: "pointer", width: "100%", opacity: joining ? 0.6 : 1 }}>
+        {joining ? "JOINING..." : "JOIN LOBBY"}
+      </button>
+      <button onClick={onBack} style={{ marginTop: 8, background: "transparent", color: COLORS.grayLight, border: "none", padding: "12px", fontSize: 14, cursor: "pointer" }}>
+        ← Back
+      </button>
+    </div>
+  );
+}
+
+// ==================== LOBBY WAITING ====================
+function LobbyWaiting({ lobby, onStart, onBack }) {
+  const [timeLeft, setTimeLeft] = useState("");
+  const [playerCount, setPlayerCount] = useState(0);
+  const [expired, setExpired] = useState(false);
+
+  useEffect(() => {
+    const update = async () => {
+      const count = await getLobbyPlayerCount(lobby.id);
+      setPlayerCount(count);
+    };
+    update();
+
+    const sub = subscribeLobbyScores(lobby.id, () => {
+      update();
+    });
+
+    return () => unsubscribe(sub);
+  }, [lobby.id]);
+
+  useEffect(() => {
+    const tick = () => {
+      const deadline = new Date(lobby.join_deadline).getTime();
+      const now = Date.now();
+      const diff = deadline - now;
+      if (diff <= 0) {
+        setTimeLeft("0:00");
+        setExpired(true);
+        return;
+      }
+      const mins = Math.floor(diff / 60000);
+      const secs = Math.floor((diff % 60000) / 1000);
+      setTimeLeft(`${mins}:${secs.toString().padStart(2, "0")}`);
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [lobby.join_deadline]);
+
+  return (
+    <div style={{ padding: "40px 24px", textAlign: "center", minHeight: "100vh", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+      <div style={{ fontSize: 48, marginBottom: 12 }}>🏟️</div>
+      <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 16 }}>LOBBY CREATED</h2>
+
+      <div style={{ background: COLORS.panel, borderRadius: 16, padding: "24px 20px", marginBottom: 24, border: `1px solid ${COLORS.purple}44` }}>
+        <div style={{ fontSize: 11, color: COLORS.gray, letterSpacing: 2, marginBottom: 8 }}>SHARE THIS CODE</div>
+        <div style={{ fontSize: 42, fontWeight: 900, letterSpacing: 8, color: COLORS.purple, fontFamily: "monospace" }}>{lobby.code}</div>
+      </div>
+
+      <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
+        <div style={{ flex: 1, background: COLORS.panel, borderRadius: 12, padding: "16px 8px" }}>
+          <div style={{ fontSize: 28, fontWeight: 800, color: COLORS.cyan }}>{playerCount}</div>
+          <div style={{ fontSize: 10, color: COLORS.gray, marginTop: 4 }}>of {lobby.max_players} joined</div>
+        </div>
+        <div style={{ flex: 1, background: COLORS.panel, borderRadius: 12, padding: "16px 8px" }}>
+          <div style={{ fontSize: 28, fontWeight: 800, color: expired ? COLORS.red : COLORS.yellow }}>{timeLeft}</div>
+          <div style={{ fontSize: 10, color: COLORS.gray, marginTop: 4 }}>{expired ? "Timer expired" : "Time to join"}</div>
+        </div>
+      </div>
+
+      <button onClick={onStart}
+        style={{ background: `linear-gradient(135deg, ${COLORS.purple}, #6D28D9)`, color: COLORS.white, border: "none", borderRadius: 12, padding: "16px 32px", fontSize: 18, fontWeight: 800, cursor: "pointer", width: "100%", marginBottom: 12 }}>
+        START GAME
+      </button>
+      <button onClick={onBack} style={{ background: "transparent", color: COLORS.grayLight, border: "none", padding: "12px", fontSize: 14, cursor: "pointer" }}>
+        ← Cancel
+      </button>
+    </div>
+  );
+}
+
+// ==================== LOBBY LEADERBOARD (REAL-TIME) ====================
+function LobbyLeaderboard({ lobbyId, lobbyCode, playerName, onBack, onPlayAgain }) {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadLobbyLeaderboard(lobbyId).then(data => { setEntries(data); setLoading(false); }).catch(() => setLoading(false));
+
+    const sub = subscribeLobbyScores(lobbyId, (newScore) => {
+      setEntries(prev => {
+        const updated = [...prev, newScore].sort((a, b) => b.total - a.total);
+        return updated;
+      });
+    });
+
+    return () => unsubscribe(sub);
+  }, [lobbyId]);
+
+  return (
+    <div style={{ padding: "24px 16px", minHeight: "100vh" }}>
+      <div style={{ textAlign: "center", marginBottom: 8 }}>
+        <div style={{ fontSize: 11, color: COLORS.purple, letterSpacing: 3, marginBottom: 4 }}>LOBBY {lobbyCode}</div>
+        <h2 style={{ fontSize: 26, fontWeight: 900, margin: 0, background: `linear-gradient(135deg, ${COLORS.white}, ${COLORS.purple})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>LIVE LEADERBOARD</h2>
+        <div style={{ fontSize: 11, color: COLORS.green, marginTop: 6, fontWeight: 600 }}>REAL-TIME UPDATES</div>
+      </div>
+
+      <div style={{ background: COLORS.panel, borderRadius: 10, padding: "8px 14px", marginBottom: 16, textAlign: "center" }}>
+        <span style={{ fontSize: 13, color: COLORS.grayLight }}>{entries.length} player{entries.length !== 1 ? "s" : ""} finished</span>
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign: "center", color: COLORS.gray, padding: 40 }}>Loading...</div>
+      ) : entries.length === 0 ? (
+        <div style={{ textAlign: "center", color: COLORS.gray, padding: 40 }}>Waiting for players to finish...</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {entries.map((entry, i) => {
+            const isMe = entry.player_name === playerName;
+            const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : null;
+            return (
+              <div key={entry.id} style={{
+                display: "flex", alignItems: "center", padding: "10px 14px", borderRadius: 10,
+                background: isMe ? `${COLORS.purple}15` : i % 2 === 0 ? COLORS.panel : COLORS.bg,
+                border: isMe ? `1px solid ${COLORS.purple}44` : "1px solid transparent",
+              }}>
+                <div style={{ width: 32, fontSize: medal ? 20 : 14, color: COLORS.grayDark, fontWeight: 700, textAlign: "center" }}>
+                  {medal || (i + 1)}
+                </div>
+                <div style={{ flex: 1, marginLeft: 8 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: isMe ? COLORS.purple : COLORS.white }}>{entry.player_name}</div>
+                  <div style={{ fontSize: 10, color: COLORS.grayDark, marginTop: 2 }}>
+                    ⚡{entry.reaction} 🎯{entry.aim} 🧠{entry.pattern}
+                  </div>
+                </div>
+                <div style={{ fontSize: 20, fontWeight: 900, color: i < 3 ? COLORS.purple : COLORS.grayLight }}>{entry.total}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, marginTop: 24 }}>
+        <button onClick={onBack} style={{ flex: 1, background: COLORS.panel, color: COLORS.grayLight, border: "none", borderRadius: 10, padding: "12px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>HOME</button>
+        <button onClick={onPlayAgain} style={{ flex: 1, background: COLORS.purple, color: COLORS.white, border: "none", borderRadius: 10, padding: "12px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>PLAY AGAIN</button>
+      </div>
     </div>
   );
 }
@@ -409,7 +739,7 @@ function Results({ name, scores, onSubmit, submitting }) {
   );
 }
 
-// ==================== LEADERBOARD ====================
+// ==================== SOLO LEADERBOARD ====================
 function Leaderboard({ data, playerName, onBack, onPlayAgain }) {
   return (
     <div style={{ padding: "24px 16px", minHeight: "100vh" }}>
@@ -423,10 +753,10 @@ function Leaderboard({ data, playerName, onBack, onPlayAgain }) {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {data.map((entry, i) => {
-            const isMe = entry.name === playerName;
+            const isMe = entry.player_name === playerName;
             const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : null;
             return (
-              <div key={i} style={{
+              <div key={entry.id} style={{
                 display: "flex", alignItems: "center", padding: "10px 14px", borderRadius: 10,
                 background: isMe ? `${COLORS.cyan}15` : i % 2 === 0 ? COLORS.panel : COLORS.bg,
                 border: isMe ? `1px solid ${COLORS.cyan}44` : "1px solid transparent",
@@ -435,9 +765,9 @@ function Leaderboard({ data, playerName, onBack, onPlayAgain }) {
                   {medal || (i + 1)}
                 </div>
                 <div style={{ flex: 1, marginLeft: 8 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: isMe ? COLORS.cyan : COLORS.white }}>{entry.name}</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: isMe ? COLORS.cyan : COLORS.white }}>{entry.player_name}</div>
                   <div style={{ fontSize: 10, color: COLORS.grayDark, marginTop: 2 }}>
-                    ⚡{entry.scores.reaction} 🎯{entry.scores.aim} 🧠{entry.scores.pattern}
+                    ⚡{entry.reaction} 🎯{entry.aim} 🧠{entry.pattern} · {formatDate(entry.created_at)}
                   </div>
                 </div>
                 <div style={{ fontSize: 20, fontWeight: 900, color: i < 3 ? COLORS.cyan : COLORS.grayLight }}>{entry.total}</div>
