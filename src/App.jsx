@@ -2,8 +2,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import {
   submitSoloScore, loadSoloLeaderboard,
   createLobby, joinLobby, submitLobbyScore, loadLobbyLeaderboard,
-  getLobbyPlayerCount, updateLobbyStatus,
-  subscribeLobbyScores, subscribeLobbyStatus, unsubscribe,
+  updateLobbyStatus, registerLobbyPlayer, getLobbyPlayers,
+  subscribeLobbyScores, subscribeLobbyStatus, subscribeLobbyPlayers, unsubscribe,
 } from "./supabase";
 
 const COLORS = {
@@ -87,7 +87,17 @@ export default function GardenCityEsportsCombine() {
       <div style={{ height: 3, background: `linear-gradient(90deg, ${COLORS.cyan}, ${COLORS.purple})`, position: "sticky", top: 0, zIndex: 99 }} />
 
       {screen === "landing" && <Landing onSolo={startSolo} onMultiplayer={startMultiplayer} leaderboard={leaderboard} onShowLB={() => { setMode("solo"); setScreen("leaderboard"); }} />}
-      {screen === "name" && <NameEntry name={playerName} setName={setPlayerName} onNext={() => playerName.trim() && setScreen("test1-intro")} />}
+      {screen === "name" && <NameEntry name={playerName} setName={setPlayerName} mode={mode} lobbyId={lobbyId} onNext={async () => {
+        if (!playerName.trim()) return;
+        if (mode === "lobby" && lobbyId) {
+          const result = await registerLobbyPlayer(lobbyId, playerName.trim());
+          if (result.error === "NAME_TAKEN") {
+            alert("That name is already taken in this lobby. Choose another.");
+            return;
+          }
+        }
+        setScreen("test1-intro");
+      }} />}
 
       {/* Lobby screens */}
       {screen === "lobby-menu" && <LobbyMenu onBack={goHome} onCreateScreen={() => setScreen("lobby-create")} onJoinScreen={() => setScreen("lobby-join")} />}
@@ -277,6 +287,12 @@ function LobbyJoinScreen({ onBack, onJoin }) {
         setJoining(false);
         return;
       }
+      const players = await getLobbyPlayers(data.id);
+      if (players.length >= data.max_players) {
+        setError("This lobby is full.");
+        setJoining(false);
+        return;
+      }
       onJoin(data);
     } catch {
       setError("Failed to join. Check the code and try again.");
@@ -311,23 +327,34 @@ function LobbyJoinScreen({ onBack, onJoin }) {
 // ==================== LOBBY WAITING ====================
 function LobbyWaiting({ lobby, onStart, onBack }) {
   const [timeLeft, setTimeLeft] = useState("");
-  const [playerCount, setPlayerCount] = useState(0);
+  const [players, setPlayers] = useState([]);
   const [expired, setExpired] = useState(false);
+  const [isFull, setIsFull] = useState(false);
 
+  // Load players and subscribe to real-time updates
   useEffect(() => {
-    const update = async () => {
-      const count = await getLobbyPlayerCount(lobby.id);
-      setPlayerCount(count);
+    const loadPlayers = async () => {
+      const list = await getLobbyPlayers(lobby.id);
+      setPlayers(list);
+      setIsFull(list.length >= lobby.max_players);
     };
-    update();
+    loadPlayers();
 
-    const sub = subscribeLobbyScores(lobby.id, () => {
-      update();
+    const sub = subscribeLobbyPlayers(lobby.id, () => {
+      loadPlayers();
     });
 
     return () => unsubscribe(sub);
-  }, [lobby.id]);
+  }, [lobby.id, lobby.max_players]);
 
+  // Auto-close when full
+  useEffect(() => {
+    if (isFull) {
+      updateLobbyStatus(lobby.id, "active").catch(() => {});
+    }
+  }, [isFull, lobby.id]);
+
+  // Countdown timer
   useEffect(() => {
     const tick = () => {
       const deadline = new Date(lobby.join_deadline).getTime();
@@ -348,25 +375,41 @@ function LobbyWaiting({ lobby, onStart, onBack }) {
   }, [lobby.join_deadline]);
 
   return (
-    <div style={{ padding: "40px 24px", textAlign: "center", minHeight: "100vh", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+    <div style={{ padding: "32px 24px", textAlign: "center", minHeight: "100vh", display: "flex", flexDirection: "column", justifyContent: "center" }}>
       <div style={{ fontSize: 48, marginBottom: 12 }}>🏟️</div>
       <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 16 }}>LOBBY CREATED</h2>
 
-      <div style={{ background: COLORS.panel, borderRadius: 16, padding: "24px 20px", marginBottom: 24, border: `1px solid ${COLORS.purple}44` }}>
+      <div style={{ background: COLORS.panel, borderRadius: 16, padding: "24px 20px", marginBottom: 20, border: `1px solid ${COLORS.purple}44` }}>
         <div style={{ fontSize: 11, color: COLORS.gray, letterSpacing: 2, marginBottom: 8 }}>SHARE THIS CODE</div>
         <div style={{ fontSize: 42, fontWeight: 900, letterSpacing: 8, color: COLORS.purple, fontFamily: "monospace" }}>{lobby.code}</div>
       </div>
 
-      <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
+      <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
         <div style={{ flex: 1, background: COLORS.panel, borderRadius: 12, padding: "16px 8px" }}>
-          <div style={{ fontSize: 28, fontWeight: 800, color: COLORS.cyan }}>{playerCount}</div>
-          <div style={{ fontSize: 10, color: COLORS.gray, marginTop: 4 }}>of {lobby.max_players} joined</div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: isFull ? COLORS.green : COLORS.cyan }}>{players.length}</div>
+          <div style={{ fontSize: 10, color: COLORS.gray, marginTop: 4 }}>{isFull ? "LOBBY FULL" : `of ${lobby.max_players} joined`}</div>
         </div>
         <div style={{ flex: 1, background: COLORS.panel, borderRadius: 12, padding: "16px 8px" }}>
-          <div style={{ fontSize: 28, fontWeight: 800, color: expired ? COLORS.red : COLORS.yellow }}>{timeLeft}</div>
-          <div style={{ fontSize: 10, color: COLORS.gray, marginTop: 4 }}>{expired ? "Timer expired" : "Time to join"}</div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: expired || isFull ? COLORS.red : COLORS.yellow }}>{isFull ? "CLOSED" : timeLeft}</div>
+          <div style={{ fontSize: 10, color: COLORS.gray, marginTop: 4 }}>{isFull ? "No more joins" : expired ? "Timer expired" : "Time to join"}</div>
         </div>
       </div>
+
+      {/* Live player list */}
+      {players.length > 0 && (
+        <div style={{ background: COLORS.panel, borderRadius: 12, padding: "12px 16px", marginBottom: 20, textAlign: "left", maxHeight: 200, overflowY: "auto" }}>
+          <div style={{ fontSize: 10, color: COLORS.gray, letterSpacing: 2, marginBottom: 8 }}>PLAYERS JOINED</div>
+          {players.map((p, i) => (
+            <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderTop: i > 0 ? `1px solid ${COLORS.panelLight}` : "none" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11, color: COLORS.grayDark, width: 20 }}>{i + 1}.</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.white }}>{p.player_name}</span>
+                {p.play_count > 1 && <span style={{ fontSize: 9, color: COLORS.orange, background: `${COLORS.orange}22`, padding: "1px 6px", borderRadius: 8 }}>x{p.play_count}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <button onClick={onStart}
         style={{ background: `linear-gradient(135deg, ${COLORS.purple}, #6D28D9)`, color: COLORS.white, border: "none", borderRadius: 12, padding: "16px 32px", fontSize: 18, fontWeight: 800, cursor: "pointer", width: "100%", marginBottom: 12 }}>
@@ -380,6 +423,8 @@ function LobbyWaiting({ lobby, onStart, onBack }) {
 }
 
 // ==================== LOBBY LEADERBOARD (REAL-TIME) ====================
+const DEVICE_COLORS = ["#F97316", "#EC4899", "#3B82F6", "#14B8A6", "#A855F7", "#EAB308", "#EF4444", "#06B6D4", "#84CC16", "#F43F5E"];
+
 function LobbyLeaderboard({ lobbyId, lobbyCode, playerName, onBack, onPlayAgain }) {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -397,6 +442,24 @@ function LobbyLeaderboard({ lobbyId, lobbyCode, playerName, onBack, onPlayAgain 
     return () => unsubscribe(sub);
   }, [lobbyId]);
 
+  // Group entries by device_id to detect repeat players and assign colors
+  const deviceMap = {};
+  let colorIdx = 0;
+  entries.forEach(e => {
+    if (!e.device_id) return;
+    if (!deviceMap[e.device_id]) {
+      deviceMap[e.device_id] = { count: 0, color: DEVICE_COLORS[colorIdx % DEVICE_COLORS.length], names: new Set() };
+      colorIdx++;
+    }
+    deviceMap[e.device_id].count++;
+    deviceMap[e.device_id].names.add(e.player_name);
+  });
+  // Only show badges for devices with multiple entries
+  const repeatDevices = {};
+  for (const [did, info] of Object.entries(deviceMap)) {
+    if (info.count > 1) repeatDevices[did] = info;
+  }
+
   return (
     <div style={{ padding: "24px 16px", minHeight: "100vh" }}>
       <div style={{ textAlign: "center", marginBottom: 8 }}>
@@ -406,7 +469,7 @@ function LobbyLeaderboard({ lobbyId, lobbyCode, playerName, onBack, onPlayAgain 
       </div>
 
       <div style={{ background: COLORS.panel, borderRadius: 10, padding: "8px 14px", marginBottom: 16, textAlign: "center" }}>
-        <span style={{ fontSize: 13, color: COLORS.grayLight }}>{entries.length} player{entries.length !== 1 ? "s" : ""} finished</span>
+        <span style={{ fontSize: 13, color: COLORS.grayLight }}>{entries.length} score{entries.length !== 1 ? "s" : ""} submitted</span>
       </div>
 
       {loading ? (
@@ -418,22 +481,48 @@ function LobbyLeaderboard({ lobbyId, lobbyCode, playerName, onBack, onPlayAgain 
           {entries.map((entry, i) => {
             const isMe = entry.player_name === playerName;
             const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : null;
+            const repeat = entry.device_id && repeatDevices[entry.device_id];
+            const badgeColor = repeat ? repeat.color : null;
+            // Count how many times THIS device has appeared up to this entry
+            let playNum = 0;
+            if (repeat) {
+              let seen = 0;
+              for (let j = 0; j <= i; j++) {
+                if (entries[j].device_id === entry.device_id) seen++;
+              }
+              playNum = seen;
+            }
             return (
               <div key={entry.id} style={{
                 display: "flex", alignItems: "center", padding: "10px 14px", borderRadius: 10,
                 background: isMe ? `${COLORS.purple}15` : i % 2 === 0 ? COLORS.panel : COLORS.bg,
-                border: isMe ? `1px solid ${COLORS.purple}44` : "1px solid transparent",
+                border: isMe ? `1px solid ${COLORS.purple}44` : repeat ? `1px solid ${badgeColor}33` : "1px solid transparent",
               }}>
                 <div style={{ width: 32, fontSize: medal ? 20 : 14, color: COLORS.grayDark, fontWeight: 700, textAlign: "center" }}>
                   {medal || (i + 1)}
                 </div>
                 <div style={{ flex: 1, marginLeft: 8 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: isMe ? COLORS.purple : COLORS.white }}>{entry.player_name}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: isMe ? COLORS.purple : COLORS.white }}>{entry.player_name}</span>
+                    {repeat && (
+                      <span style={{ fontSize: 9, fontWeight: 700, color: badgeColor, background: `${badgeColor}22`, padding: "1px 6px", borderRadius: 8, whiteSpace: "nowrap" }}>
+                        x{playNum}
+                      </span>
+                    )}
+                    {repeat && repeat.names.size > 1 && entry.player_name !== [...repeat.names][0] && (
+                      <span style={{ fontSize: 9, color: badgeColor, opacity: 0.7 }}>
+                        = {[...repeat.names].find(n => n !== entry.player_name)}
+                      </span>
+                    )}
+                  </div>
                   <div style={{ fontSize: 10, color: COLORS.grayDark, marginTop: 2 }}>
                     ⚡{entry.reaction} 🎯{entry.aim} 🧠{entry.pattern}
                   </div>
                 </div>
-                <div style={{ fontSize: 20, fontWeight: 900, color: i < 3 ? COLORS.purple : COLORS.grayLight }}>{entry.total}</div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 20, fontWeight: 900, color: i < 3 ? COLORS.purple : COLORS.grayLight }}>{entry.total}</div>
+                  {repeat && <div style={{ width: 8, height: 8, borderRadius: "50%", background: badgeColor, margin: "4px 0 0 auto" }} />}
+                </div>
               </div>
             );
           })}
