@@ -56,7 +56,7 @@ export async function submitSoloScore(name, scores, difficulty = "normal") {
 export async function loadSoloLeaderboard() {
   const { data, error } = await supabase
     .from("scores")
-    .select("*")
+    .select("id,player_name,reaction,aim,pattern,total,difficulty,created_at")
     .is("lobby_id", null)
     .eq("mode", "combine")
     .order("total", { ascending: false })

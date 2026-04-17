@@ -20,7 +20,7 @@ function formatDate(ts) {
 }
 
 // ==================== MAIN APP ====================
-export default function GardenCityEsportsCombine() {
+export default function EsportsCombine() {
   const [screen, setScreen] = useState("landing");
   const [playerName, setPlayerName] = useState("");
   const [scores, setScores] = useState({ reaction: 0, aim: 0, pattern: 0 });
@@ -135,8 +135,8 @@ export default function GardenCityEsportsCombine() {
 function Landing({ onSolo, onMultiplayer, onPractice, onStats, leaderboard, onShowLB }) {
   return (
     <div style={{ padding: "40px 24px", textAlign: "center", minHeight: "100vh", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-      <div style={{ fontSize: 11, color: COLORS.cyan, letterSpacing: 4, fontWeight: 700, marginBottom: 8 }}>GARDEN CITY ESPORTS</div>
-      <h1 style={{ fontSize: 36, fontWeight: 900, margin: "0 0 4px", lineHeight: 1.1, background: `linear-gradient(135deg, ${COLORS.white}, ${COLORS.cyan})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>GARDEN CITY ESPORTS<br/>COMBINE</h1>
+      {/* <div style={{ fontSize: 11, color: COLORS.cyan, letterSpacing: 4, fontWeight: 700, marginBottom: 8 }}>ESPORTS</div> */}
+      <h1 style={{ fontSize: 36, fontWeight: 900, margin: "0 0 4px", lineHeight: 1.1, background: `linear-gradient(135deg, ${COLORS.white}, ${COLORS.cyan})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>ESPORTS<br/>COMBINE</h1>
       <p style={{ color: COLORS.gray, fontSize: 14, margin: "12px 0 24px", lineHeight: 1.5 }}>3 tests. Reaction. Aim. Memory.<br/>Compete for the top score.</p>
 
       <div style={{ display: "flex", gap: 12, justifyContent: "center", marginBottom: 20 }}>
@@ -810,7 +810,7 @@ function Results({ name, scores, difficulty, onSubmit, submitting }) {
     ctx.fillStyle = grad; ctx.fillRect(0, 0, 1080, 6);
     // Branding
     ctx.fillStyle = COLORS.cyan; ctx.font = "bold 24px 'Segoe UI', sans-serif"; ctx.textAlign = "center"; ctx.letterSpacing = "8px";
-    ctx.fillText("GARDEN CITY ESPORTS COMBINE", 540, 120);
+    ctx.fillText("ESPORTS COMBINE", 540, 120);
     // Name
     ctx.fillStyle = COLORS.white; ctx.font = "bold 48px 'Segoe UI', sans-serif";
     ctx.fillText(name.toUpperCase(), 540, 220);
@@ -893,7 +893,7 @@ function Leaderboard({ data, playerName, onBack, onPlayAgain }) {
   return (
     <div style={{ padding: "24px 16px", minHeight: "100vh" }}>
       <div style={{ textAlign: "center", marginBottom: 24 }}>
-        <div style={{ fontSize: 11, color: COLORS.cyan, letterSpacing: 3, marginBottom: 4 }}>GARDEN CITY ESPORTS COMBINE</div>
+        <div style={{ fontSize: 11, color: COLORS.cyan, letterSpacing: 3, marginBottom: 4 }}>ESPORTS COMBINE</div>
         <h2 style={{ fontSize: 26, fontWeight: 900, margin: 0, background: `linear-gradient(135deg, ${COLORS.white}, ${COLORS.cyan})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>LEADERBOARD</h2>
       </div>
       {data.length === 0 ? <div style={{ textAlign: "center", color: COLORS.gray, padding: 40 }}>No scores yet. Be the first!</div>
